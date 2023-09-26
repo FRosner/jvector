@@ -28,6 +28,7 @@ import io.github.jbellis.jvector.util.Accountable;
 import io.github.jbellis.jvector.util.RamUsageEstimator;
 
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
 
@@ -43,6 +44,8 @@ public final class OnHeapGraphIndex<T> implements GraphIndex<T>, Accountable {
   private final AtomicReference<Integer> entryPoint; 
 
   private final ConcurrentHashMap<Integer, ConcurrentNeighborSet> nodes;
+  // CHM.size needs to sum some internal state, so this is simpler when we only ever add to the CHM
+  private final AtomicInteger graphSize = new AtomicInteger(0);
 
   // max neighbors/edges per node
   final int nsize0;
@@ -69,7 +72,7 @@ public final class OnHeapGraphIndex<T> implements GraphIndex<T>, Accountable {
 
   @Override
   public int size() {
-    return nodes.size();
+    return graphSize.get();
   }
 
   /**
@@ -87,6 +90,7 @@ public final class OnHeapGraphIndex<T> implements GraphIndex<T>, Accountable {
    */
   public void addNode(int node) {
     nodes.put(node, neighborFactory.apply(node, maxEdgesPerNode()));
+    graphSize.incrementAndGet();
   }
 
   /** must be called after addNode once neighbors are linked in all levels. */
