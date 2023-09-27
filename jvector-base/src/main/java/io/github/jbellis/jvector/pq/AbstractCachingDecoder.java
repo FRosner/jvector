@@ -5,19 +5,27 @@ import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 import io.github.jbellis.jvector.vector.VectorUtil;
 
 /**
- * Performs similarity comparisons with compressed vectors without decoding them
+ * Performs similarity comparisons with compressed vectors without decoding them.
+ * This is done by precomputing partial sums and magnitudes of the query vector
+ * with the compressed vectors.  The structures holding these sums are cached
+ * in a threadlocal to avoid the overhead of zeroing them out anew for each query.
+ * <p>
+ * The initialization of these structures is done in the constructor.
+ * <p>
+ * By design, this is interdependent on the implementation of CompressedVectors.
  */
-abstract class CompressedDecoder implements NeighborSimilarity.ApproximateScoreFunction {
+abstract class AbstractCachingDecoder implements NeighborSimilarity.ApproximateScoreFunction {
     protected final CompressedVectors cv;
 
-    protected CompressedDecoder(CompressedVectors cv) {
+    protected AbstractCachingDecoder(CompressedVectors cv) {
         this.cv = cv;
     }
 
-    protected static abstract class CachingDecoder extends CompressedDecoder {
+    // superclass for dot and euclidean products
+    protected static abstract class PartialSumDecoder extends AbstractCachingDecoder {
         protected final float[][] partialSums;
 
-        protected CachingDecoder(CompressedVectors cv, float[] query, VectorSimilarityFunction vsf) {
+        protected PartialSumDecoder(CompressedVectors cv, float[] query, VectorSimilarityFunction vsf) {
             super(cv);
             var pq = this.cv.pq;
             partialSums = cv.reusablePartialSums();
@@ -54,7 +62,7 @@ abstract class CompressedDecoder implements NeighborSimilarity.ApproximateScoreF
         }
     }
 
-    static class DotProductDecoder extends CachingDecoder {
+    static class DotProductDecoder extends PartialSumDecoder {
         public DotProductDecoder(CompressedVectors cv, float[] query) {
             super(cv, query, VectorSimilarityFunction.DOT_PRODUCT);
         }
@@ -65,7 +73,7 @@ abstract class CompressedDecoder implements NeighborSimilarity.ApproximateScoreF
         }
     }
 
-    static class EuclideanDecoder extends CachingDecoder {
+    static class EuclideanDecoder extends PartialSumDecoder {
         public EuclideanDecoder(CompressedVectors cv, float[] query) {
             super(cv, query, VectorSimilarityFunction.EUCLIDEAN);
         }
@@ -76,7 +84,7 @@ abstract class CompressedDecoder implements NeighborSimilarity.ApproximateScoreF
         }
     }
 
-    static class CosineDecoder extends CompressedDecoder {
+    static class CosineDecoder extends AbstractCachingDecoder {
         protected final float[][] partialSums;
         protected final float[][] aMagnitude;
         protected final float bMagnitude;

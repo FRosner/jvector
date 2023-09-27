@@ -106,11 +106,11 @@ public class CompressedVectors
     public NeighborSimilarity.ApproximateScoreFunction approximateScoreFunctionFor(float[] q, VectorSimilarityFunction similarityFunction) {
         switch (similarityFunction) {
             case DOT_PRODUCT:
-                return new CompressedDecoder.DotProductDecoder(this, q);
+                return new AbstractCachingDecoder.DotProductDecoder(this, q);
             case EUCLIDEAN:
-                return new CompressedDecoder.EuclideanDecoder(this, q);
+                return new AbstractCachingDecoder.EuclideanDecoder(this, q);
             case COSINE:
-                return new CompressedDecoder.CosineDecoder(this, q);
+                return new AbstractCachingDecoder.CosineDecoder(this, q);
             default:
                 throw new IllegalArgumentException("Unsupported similarity function " + similarityFunction);
         }
