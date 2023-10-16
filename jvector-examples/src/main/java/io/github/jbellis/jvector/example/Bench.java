@@ -44,7 +44,11 @@ import java.util.stream.IntStream;
  * Tests GraphIndexes against vectors from various datasets
  */
 public class Bench {
-    private static void testRecall(int M, int efConstruction, List<Boolean> diskOptions, List<Integer> efSearchOptions, DataSet ds, CompressedVectors cv, Path testDirectory) throws IOException {
+
+    private static List<Integer> pqGrid;
+    private static List<Double> thGrid;
+
+    private static void testRecall(int M, int efConstruction, List<Boolean> diskOptions, List<Integer> efSearchOptions, DataSet ds, Path testDirectory) throws IOException {
         var floatVectors = new ListRandomAccessVectorValues(ds.baseVectors, ds.baseVectors.get(0).length);
         var topK = ds.groundTruth.get(0).size();
 
@@ -61,14 +65,27 @@ public class Bench {
                 OnDiskGraphIndex.write(onHeapGraph, floatVectors, outputStream);
             }
             try (var onDiskGraph = new CachingGraphIndex(new OnDiskGraphIndex<>(ReaderSupplierFactory.open(graphPath), 0))) {
-                int queryRuns = 2;
-                for (int overquery : efSearchOptions) {
-                    for (boolean useDisk : diskOptions) {
+                for (var pqFactor : pqGrid) {
+                    for (var threshold : thGrid) {
                         start = System.nanoTime();
-                        var pqr = performQueries(ds, floatVectors, useDisk ? cv : null, useDisk ? onDiskGraph : onHeapGraph, topK, topK * overquery, queryRuns);
-                        var recall = ((double) pqr.topKFound) / (queryRuns * ds.queryVectors.size() * topK);
-                        System.out.format("  Query PQ=%b top %d/%d recall %.4f in %.2fs after %s nodes visited%n",
-                                          useDisk, topK, overquery, recall, (System.nanoTime() - start) / 1_000_000_000.0, pqr.nodesVisited);
+                        int originalDimension = ds.baseVectors.get(0).length;
+                        var pqDims = originalDimension / pqFactor;
+                        ListRandomAccessVectorValues ravv = new ListRandomAccessVectorValues(ds.baseVectors, originalDimension);
+                        var pq = ProductQuantization.compute(ravv, pqDims, threshold, ds.similarityFunction == VectorSimilarityFunction.EUCLIDEAN);
+                        var encoded = pq.encodeAll(ds.baseVectors);
+                        var cv = new CompressedVectors(pq, encoded);
+                        System.out.format("PQ@%s, T=%.2f built in %.2fs,%n", pqDims, threshold, (System.nanoTime() - start) / 1_000_000_000.0);
+
+                        int queryRuns = 2;
+                        for (int overquery : efSearchOptions) {
+                            for (boolean useDisk : diskOptions) {
+                                start = System.nanoTime();
+                                var pqr = performQueries(ds, floatVectors, useDisk ? cv : null, useDisk ? onDiskGraph : onHeapGraph, topK, topK * overquery, queryRuns);
+                                var recall = ((double) pqr.topKFound) / (queryRuns * ds.queryVectors.size() * topK);
+                                System.out.format("  Query PQ=%b top %d/%d recall %.4f in %.2fs after %s nodes visited%n",
+                                                  useDisk, topK, overquery, recall, (System.nanoTime() - start) / 1_000_000_000.0, pqr.nodesVisited);
+                            }
+                        }
                     }
                 }
             }
@@ -138,8 +155,8 @@ public class Bench {
         var efConstructionGrid = List.of(100);
         var efSearchGrid = List.of(1, 2);
         var diskGrid = List.of(false, true);
-        var pqGrid = List.of(4);
-        var thGrid = List.of(0.1, 0.2, 0.4, 0.6, 0.8);
+        pqGrid = List.of(4);
+        thGrid = List.of(0.1, 0.2, 0.4, 0.6, 0.8);
 
         // this dataset contains more than 10k query vectors, so we limit it with .subList
 //        var adaSet = loadWikipediaData();
@@ -151,18 +168,10 @@ public class Bench {
                 // "hdf5/gist-960-euclidean.hdf5",
                 "hdf5/nytimes-256-angular.hdf5",
                 "hdf5/glove-100-angular.hdf5",
-                "hdf5/glove-200-angular.hdf5",
-                "hdf5/sift-128-euclidean.hdf5");
+                "hdf5/glove-200-angular.hdf5");
+//                "hdf5/sift-128-euclidean.hdf5");
         for (var f : files) {
-            gridSearch(Hdf5Loader.load(f), pqGrid, thGrid, mGrid, efConstructionGrid, diskGrid, efSearchGrid);
-        }
-
-        // tiny dataset, don't waste time building a huge index
-        files = List.of("hdf5/fashion-mnist-784-euclidean.hdf5");
-        mGrid = List.of(8, 12, 16, 24);
-        efConstructionGrid = List.of(40, 60, 80, 100, 120, 160);
-        for (var f : files) {
-            gridSearch(Hdf5Loader.load(f), pqGrid, thGrid, mGrid, efConstructionGrid, diskGrid, efSearchGrid);
+            gridSearch(Hdf5Loader.load(f), mGrid, efConstructionGrid, diskGrid, efSearchGrid);
         }
     }
 
@@ -180,33 +189,17 @@ public class Bench {
         return ds;
     }
 
-    private static void gridSearch(DataSet ds, List<Integer> pqGrid, List<Double> thGrid, List<Integer> mGrid, List<Integer> efConstructionGrid, List<Boolean> diskOptions, List<Integer> efSearchFactor) throws IOException {
-        for (var pqFactor : pqGrid) {
-            for (var threshold : thGrid) {
-                var start = System.nanoTime();
-                int originalDimension = ds.baseVectors.get(0).length;
-                var pqDims = originalDimension / pqFactor;
-                ListRandomAccessVectorValues ravv = new ListRandomAccessVectorValues(ds.baseVectors, originalDimension);
-                ProductQuantization pq = ProductQuantization.compute(ravv, pqDims, threshold, ds.similarityFunction == VectorSimilarityFunction.EUCLIDEAN);
-                System.out.format("PQ@%s, T=%.2f built in %.2fs,%n", pqDims, threshold, (System.nanoTime() - start) / 1_000_000_000.0);
+    private static void gridSearch(DataSet ds, List<Integer> mGrid, List<Integer> efConstructionGrid, List<Boolean> diskOptions, List<Integer> efSearchFactor) throws IOException {
+        var testDirectory = Files.createTempDirectory("BenchGraphDir");
 
-                start = System.nanoTime();
-                var quantizedVectors = pq.encodeAll(ds.baseVectors);
-                var compressedVectors = new CompressedVectors(pq, quantizedVectors);
-                System.out.format("PQ encoded %d vectors [%.2f MB] in %.2fs,%n", ds.baseVectors.size(), (compressedVectors.memorySize()/1024f/1024f) , (System.nanoTime() - start) / 1_000_000_000.0);
-
-                var testDirectory = Files.createTempDirectory("BenchGraphDir");
-
-                try {
-                    for (int M : mGrid) {
-                        for (int beamWidth : efConstructionGrid) {
-                            testRecall(M, beamWidth, diskOptions, efSearchFactor, ds, compressedVectors, testDirectory);
-                        }
-                    }
-                } finally {
-                    Files.delete(testDirectory);
+        try {
+            for (int M : mGrid) {
+                for (int beamWidth : efConstructionGrid) {
+                    testRecall(M, beamWidth, diskOptions, efSearchFactor, ds, testDirectory);
                 }
             }
+        } finally {
+            Files.delete(testDirectory);
         }
     }
 }
