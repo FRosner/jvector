@@ -52,22 +52,27 @@ public class ProductQuantization {
     /**
      * Initializes the codebooks by clustering the input data using Product Quantization.
      *
-     * @param ravv the vectors to quantize
-     * @param M number of subspaces
+     * @param ravv           the vectors to quantize
+     * @param M              number of subspaces
      * @param globallyCenter whether to center the vectors globally before quantization
      *                       (not recommended when using the quantization for dot product)
      */
     public static ProductQuantization compute(RandomAccessVectorValues<float[]> ravv, int M, boolean globallyCenter) {
+        return compute(ravv, M, 1.0, globallyCenter);
+    }
+
+
+    public static ProductQuantization compute(RandomAccessVectorValues<float[]> ravv, int M, double threshold, boolean globallyCenter) {
         // limit the number of vectors we train on
         var P = min(1.0f, MAX_PQ_TRAINING_SET_SIZE / (float) ravv.size());
         var subvectorSizesAndOffsets = getSubvectorSizesAndOffsets(ravv.dimension(), M);
         var vectors = IntStream.range(0, ravv.size()).parallel()
-                .filter(i -> ThreadLocalRandom.current().nextFloat() < P)
-                .mapToObj(targetOrd -> {
-                    float[] v = ravv.vectorValue(targetOrd);
-                    return ravv.isValueShared() ? Arrays.copyOf(v, v.length) : v;
-                })
-                .collect(Collectors.toList());
+                               .filter(i -> ThreadLocalRandom.current().nextFloat() < P)
+                               .mapToObj(targetOrd -> {
+                                   float[] v = ravv.vectorValue(targetOrd);
+                                   return ravv.isValueShared() ? Arrays.copyOf(v, v.length) : v;
+                               })
+                               .collect(Collectors.toList());
 
         // subtract the centroid from each training vector
         float[] globalCentroid;
@@ -76,17 +81,17 @@ public class ProductQuantization {
             // subtract the centroid from each vector
             List<float[]> finalVectors = vectors;
             vectors = PhysicalCoreExecutor.instance.submit(() -> finalVectors.stream().parallel().map(v -> VectorUtil.sub(v, globalCentroid)).collect(Collectors.toList()));
-        } else {
+        }
+        else {
             globalCentroid = null;
         }
 
         // derive the codebooks
-        var codebooks = createCodebooks(vectors, M, subvectorSizesAndOffsets);
+        var codebooks = createCodebooks(vectors, M, threshold, subvectorSizesAndOffsets);
         return new ProductQuantization(codebooks, globalCentroid);
     }
 
-    ProductQuantization(float[][][] codebooks, float[] globalCentroid)
-    {
+    ProductQuantization(float[][][] codebooks, float[] globalCentroid) {
         this.codebooks = codebooks;
         this.globalCentroid = globalCentroid;
         this.M = codebooks.length;
@@ -94,7 +99,7 @@ public class ProductQuantization {
         int offset = 0;
         for (int i = 0; i < M; i++) {
             int size = codebooks[i][0].length;
-            this.subvectorSizesAndOffsets[i] = new int[]{size, offset};
+            this.subvectorSizesAndOffsets[i] = new int[]{ size, offset };
             offset += size;
         }
         this.originalDimension = Arrays.stream(subvectorSizesAndOffsets).mapToInt(m -> m[0]).sum();
@@ -104,7 +109,7 @@ public class ProductQuantization {
      * Encodes the given vectors in parallel using the PQ codebooks.
      */
     public byte[][] encodeAll(List<float[]> vectors) {
-        return PhysicalCoreExecutor.instance.submit(() ->vectors.stream().parallel().map(this::encode).toArray(byte[][]::new));
+        return PhysicalCoreExecutor.instance.submit(() -> vectors.stream().parallel().map(this::encode).toArray(byte[][]::new));
     }
 
     /**
@@ -165,14 +170,15 @@ public class ProductQuantization {
     // for testing
     static void printCodebooks(List<List<float[]>> codebooks) {
         List<List<String>> strings = codebooks.stream()
-                .map(L -> L.stream()
-                        .map(ProductQuantization::arraySummary)
-                        .collect(Collectors.toList()))
-                .collect(Collectors.toList());
+                                              .map(L -> L.stream()
+                                                         .map(ProductQuantization::arraySummary)
+                                                         .collect(Collectors.toList()))
+                                              .collect(Collectors.toList());
         System.out.printf("Codebooks: [%s]%n", String.join("\n ", strings.stream()
-                .map(L -> "[" + String.join(", ", L) + "]")
-                .collect(Collectors.toList())));
+                                                                         .map(L -> "[" + String.join(", ", L) + "]")
+                                                                         .collect(Collectors.toList())));
     }
+
     private static String arraySummary(float[] a) {
         List<String> b = new ArrayList<>();
         for (int i = 0; i < min(4, a.length); i++) {
@@ -184,18 +190,21 @@ public class ProductQuantization {
         return "[" + String.join(", ", b) + "]";
     }
 
-    static float[][][] createCodebooks(List<float[]> vectors, int M, int[][] subvectorSizeAndOffset) {
+    static float[][][] createCodebooks(List<float[]> vectors, int M, double threshold, int[][] subvectorSizeAndOffset) {
         return PhysicalCoreExecutor.instance.submit(() -> IntStream.range(0, M).parallel()
-                .mapToObj(m -> {
-                    float[][] subvectors = vectors.stream().parallel()
-                            .map(vector -> getSubVector(vector, m, subvectorSizeAndOffset))
-                            .toArray(float[][]::new);
-                    var clusterer = new KMeansPlusPlusClusterer(subvectors, CLUSTERS, VectorUtil::squareDistance);
-                    return clusterer.cluster(K_MEANS_ITERATIONS);
-                })
-                .toArray(float[][][]::new));
+                                                                   .mapToObj(m -> {
+                                                                       float[][] subvectors = vectors.stream().parallel()
+                                                                                                     .map(vector -> getSubVector(vector, m, subvectorSizeAndOffset))
+                                                                                                     .toArray(float[][]::new);
+                                                                       var clusterer = new KMeansPlusPlusClusterer(subvectors, CLUSTERS, (v1, v2) -> {
+                                                                           var d = VectorUtil.squareDistance(v1, v2);
+                                                                           return d <= threshold ? d : 0;
+                                                                       });
+                                                                       return clusterer.cluster(K_MEANS_ITERATIONS);
+                                                                   })
+                                                                   .toArray(float[][][]::new));
     }
-    
+
     static int closetCentroidIndex(float[] subvector, float[][] codebook) {
         int index = 0;
         float minDist = Integer.MAX_VALUE;
@@ -229,17 +238,17 @@ public class ProductQuantization {
         int offset = 0;
         for (int i = 0; i < M; i++) {
             int size = baseSize + (i < remainder ? 1 : 0);
-            sizes[i] = new int[]{size, offset};
+            sizes[i] = new int[]{ size, offset };
             offset += size;
         }
         return sizes;
     }
 
-    public void write(DataOutput out) throws IOException
-    {
+    public void write(DataOutput out) throws IOException {
         if (globalCentroid == null) {
             out.writeInt(0);
-        } else {
+        }
+        else {
             out.writeInt(globalCentroid.length);
             Io.writeFloats(out, globalCentroid);
         }
