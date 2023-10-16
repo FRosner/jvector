@@ -198,7 +198,7 @@ public class ProductQuantization {
                                                                                                      .toArray(float[][]::new);
                                                                        var clusterer = new KMeansPlusPlusClusterer(subvectors, CLUSTERS, (v1, v2) -> {
                                                                            var d = VectorUtil.squareDistance(v1, v2);
-                                                                           return d <= threshold ? d : 0;
+                                                                           return d >= threshold ? d : 0;
                                                                        });
                                                                        return clusterer.cluster(K_MEANS_ITERATIONS);
                                                                    })
