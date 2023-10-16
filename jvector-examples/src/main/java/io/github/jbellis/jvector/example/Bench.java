@@ -156,7 +156,7 @@ public class Bench {
         var efSearchGrid = List.of(1, 2);
         var diskGrid = List.of(false, true);
         pqGrid = List.of(4);
-        thGrid = List.of(0.1, 0.2, 0.4, 0.6, 0.8);
+        thGrid = List.of(0.0, 0.1, 0.2, 0.4, 0.6, 0.8);
 
         // this dataset contains more than 10k query vectors, so we limit it with .subList
 //        var adaSet = loadWikipediaData();
