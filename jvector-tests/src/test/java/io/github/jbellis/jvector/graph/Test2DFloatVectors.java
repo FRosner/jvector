@@ -27,7 +27,7 @@ import java.util.Arrays;
 import java.util.List;
 
 @ThreadLeakScope(ThreadLeakScope.Scope.NONE)
-public class Test2DThreshold extends LuceneTestCase {
+public class Test2DFloatVectors extends LuceneTestCase {
     @Test
     public void testThreshold() {
         var R = getRandom();
