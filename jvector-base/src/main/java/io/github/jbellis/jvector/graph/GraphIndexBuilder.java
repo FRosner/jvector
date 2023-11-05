@@ -65,6 +65,7 @@ public class GraphIndexBuilder<T> {
     // and `vectorsCopy` later on when defining the ScoreFunction for search.
     private final PoolingSupport<RandomAccessVectorValues<T>> vectors;
     private final PoolingSupport<RandomAccessVectorValues<T>> vectorsCopy;
+    private final int dimension; // for convenience so we don't have to go to the pool for this
     private final NeighborSimilarity similarity;
 
     /**
@@ -91,6 +92,7 @@ public class GraphIndexBuilder<T> {
             float alpha) {
         vectors = vectorValues.isValueShared() ? PoolingSupport.newThreadBased(vectorValues::copy) : PoolingSupport.newNoPooling(vectorValues);
         vectorsCopy = vectorValues.isValueShared() ? PoolingSupport.newThreadBased(vectorValues::copy) : PoolingSupport.newNoPooling(vectorValues);
+        dimension = vectorValues.dimension();
         this.vectorEncoding = Objects.requireNonNull(vectorEncoding);
         this.similarityFunction = Objects.requireNonNull(similarityFunction);
         this.neighborOverflow = neighborOverflow;
@@ -133,6 +135,24 @@ public class GraphIndexBuilder<T> {
             });
         });
 
+        // Post-construction pass to improve edge quality on very low-d indexes.  This makes a big difference
+        // in the ability of search to escape local maxima to find better options.
+        //
+        // This has negligible effect on ML embedding-sized vectors, starting at least with GloVe-25, so we don't bother.
+        // (Dimensions between 4 and 25 are untested but they get left out too.)
+        //
+        // For 2D vectors, this takes us from about 50% recall at 1M nodes to 100% up to 4M.  (Higher counts untested.)
+        if (dimension <= 3) {
+            // This is surprisingly relevant at very low D (surprising because it doesn't make much difference at high D),
+            // to the point that picking a close-to-optimal entry node is very close to powerful as doing an entire 3rd pass
+            graph.updateEntryNode(approximateMedioid());
+            improveConnections(graph.entry());
+
+            PhysicalCoreExecutor.instance.execute(() -> {
+                IntStream.range(0, size).parallel().forEach(this::improveConnections);
+            });
+        }
+
         cleanup();
         return graph;
     }
@@ -170,7 +190,6 @@ public class GraphIndexBuilder<T> {
 
         // optimize entry node
         graph.updateEntryNode(approximateMedioid());
-        graph.validateEntryNode(); // check again after updating
     }
 
     private void reconnectOrphanedNodes() {
@@ -276,7 +295,8 @@ public class GraphIndexBuilder<T> {
         try (var gs = graphSearcher.get();
              var vc = vectorsCopy.get();
              var naturalScratchPooled = naturalScratch.get();
-             var concurrentScratchPooled = concurrentScratch.get()) {
+             var concurrentScratchPooled = concurrentScratch.get())
+        {
             // find ANN of the new node by searching the graph
             int ep = graph.entry();
             NeighborSimilarity.ExactScoreFunction scoreFunction = i -> scoreBetween(vc.get().vectorValue(i), value);
@@ -301,6 +321,24 @@ public class GraphIndexBuilder<T> {
         }
 
         return graph.ramBytesUsedOneNode(0);
+    }
+
+    public void improveConnections(int node) {
+        try (var pv = vectors.get();
+             var gs = graphSearcher.get();
+             var vc = vectorsCopy.get();
+             var naturalScratchPooled = naturalScratch.get())
+        {
+            final T value = pv.get().vectorValue(node);
+
+            // find ANN of the new node by searching the graph
+            int ep = graph.entry();
+            NeighborSimilarity.ExactScoreFunction scoreFunction = i -> scoreBetween(vc.get().vectorValue(i), value);
+            var bits = new ExcludingBits(node);
+            var result = gs.get().searchInternal(scoreFunction, null, beamWidth, 0.0f, ep, bits);
+            var natural = toScratchCandidates(result.getNodes(), result.getNodes().length, naturalScratchPooled.get());
+            updateNeighbors(graph.getNeighbors(node), natural, NeighborArray.EMPTY);
+        }
     }
 
     public void markNodeDeleted(int node) {
@@ -432,7 +470,7 @@ public class GraphIndexBuilder<T> {
              var vc = vectorsCopy.get())
         {
             // compute centroid
-            var centroid = new float[vc.get().dimension()];
+            var centroid = new float[dimension];
             for (var it = graph.getNodes(); it.hasNext(); ) {
                 var node = it.nextInt();
                 VectorUtil.addInPlace(centroid, (float[]) vc.get().vectorValue(node));
