@@ -138,24 +138,6 @@ public class GraphIndexBuilder<T> {
             });
         });
 
-        // Post-construction pass to improve edge quality on very low-d indexes.  This makes a big difference
-        // in the ability of search to escape local maxima to find better options.
-        //
-        // This has negligible effect on ML embedding-sized vectors, starting at least with GloVe-25, so we don't bother.
-        // (Dimensions between 4 and 25 are untested but they get left out too.)
-        //
-        // For 2D vectors, this takes us from about 50% recall at 1M nodes to 100% up to 4M.  (Higher counts untested.)
-        if (dimension <= 0) {
-            // This is surprisingly relevant at very low D (surprising because it doesn't make much difference at high D),
-            // to the point that picking a close-to-optimal entry node is very close to powerful as doing an entire 3rd pass
-            graph.updateEntryNode(approximateMedioid());
-            improveConnections(graph.entry());
-
-            PhysicalCoreExecutor.instance.execute(() -> {
-                IntStream.range(0, size).parallel().forEach(this::improveConnections);
-            });
-        }
-
         cleanup();
         return graph;
     }
@@ -321,23 +303,38 @@ public class GraphIndexBuilder<T> {
             updateNeighbors(newNodeNeighbors, natural, concurrent);
 
             maybeUpdateEntryPoint(node);
-
-            // pick a node added earlier at random to improve its connections
-            if (dimension <= 3 && graph.size() > 20_000) {
-                // if we can't find a candidate in 3 tries something weird is going on, like the user deleted most of the graph
-                for (int i = 0; i < 3; i++) {
-                    var olderNode = ThreadLocalRandom.current().nextInt(graph.size() - 10_000);
-                    if (graph.containsNode(olderNode)) {
-                        improveConnections(olderNode);
-                        break;
-                    }
-                }
-            }
+            maybeImproveOlderNode();
         } finally {
             insertionsInProgress.remove(node);
         }
 
         return graph.ramBytesUsedOneNode(0);
+    }
+
+    /**
+     * Improve edge quality on very low-d indexes.  This makes a big difference
+     * in the ability of search to escape local maxima to find better options.
+     * <p>
+     * This has negligible effect on ML embedding-sized vectors, starting at least with GloVe-25, so we don't bother.
+     * (Dimensions between 4 and 25 are untested but they get left out too.)
+     * For 2D vectors, this takes us to over 99% recall up to at least 4M nodes.  (Higher counts untested.)
+    */
+    private void maybeImproveOlderNode() {
+        if (true) {
+            return;
+        }
+        // pick a node added earlier at random to improve its connections
+        // 20k/10k threshold chosen because that's where recall starts to fall off from 100% for 2D vectors
+        if (dimension <= 3 && graph.size() > 20_000) {
+            // if we can't find a candidate in 3 tries something weird is going on, like the user deleted most of the graph
+            for (int i = 0; i < 3; i++) {
+                var olderNode = ThreadLocalRandom.current().nextInt(graph.size() - 10_000);
+                if (graph.containsNode(olderNode)) {
+                    improveConnections(olderNode);
+                    break;
+                }
+            }
+        }
     }
 
     private void maybeUpdateEntryPoint(int node) {
