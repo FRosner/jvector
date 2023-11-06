@@ -33,6 +33,7 @@ import java.util.Objects;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.ConcurrentSkipListSet;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 
@@ -67,6 +68,8 @@ public class GraphIndexBuilder<T> {
     private final PoolingSupport<RandomAccessVectorValues<T>> vectorsCopy;
     private final int dimension; // for convenience so we don't have to go to the pool for this
     private final NeighborSimilarity similarity;
+
+    private AtomicInteger updateEntryNodeIn = new AtomicInteger(10_000);
 
     /**
      * Reads all the vectors from vector values, builds a graph connecting them by their dense
@@ -142,7 +145,7 @@ public class GraphIndexBuilder<T> {
         // (Dimensions between 4 and 25 are untested but they get left out too.)
         //
         // For 2D vectors, this takes us from about 50% recall at 1M nodes to 100% up to 4M.  (Higher counts untested.)
-        if (dimension <= 3) {
+        if (dimension <= 0) {
             // This is surprisingly relevant at very low D (surprising because it doesn't make much difference at high D),
             // to the point that picking a close-to-optimal entry node is very close to powerful as doing an entire 3rd pass
             graph.updateEntryNode(approximateMedioid());
@@ -190,6 +193,7 @@ public class GraphIndexBuilder<T> {
 
         // optimize entry node
         graph.updateEntryNode(approximateMedioid());
+        updateEntryNodeIn.set(graph.size()); // in case the user goes on to add more nodes after cleanup()
     }
 
     private void reconnectOrphanedNodes() {
@@ -315,12 +319,36 @@ public class GraphIndexBuilder<T> {
             var natural = toScratchCandidates(result.getNodes(), result.getNodes().length, naturalScratchPooled.get());
             var concurrent = getConcurrentCandidates(node, inProgressBefore, concurrentScratchPooled.get(), vectors, vc.get());
             updateNeighbors(newNodeNeighbors, natural, concurrent);
-            graph.markComplete(node);
+
+            maybeUpdateEntryPoint(node);
+
+            // pick a node added earlier at random to improve its connections
+            if (dimension <= 3 && graph.size() > 20_000) {
+                // if we can't find a candidate in 3 tries something weird is going on, like the user deleted most of the graph
+                for (int i = 0; i < 3; i++) {
+                    var olderNode = ThreadLocalRandom.current().nextInt(graph.size() - 10_000);
+                    if (graph.containsNode(olderNode)) {
+                        improveConnections(olderNode);
+                        break;
+                    }
+                }
+            }
         } finally {
             insertionsInProgress.remove(node);
         }
 
         return graph.ramBytesUsedOneNode(0);
+    }
+
+    private void maybeUpdateEntryPoint(int node) {
+        graph.maybeSetInitialEntryNode(node); // TODO it seems silly to call this long after we've set it the first time
+
+        if (updateEntryNodeIn.decrementAndGet() == 0) {
+            int newEntryNode = approximateMedioid();
+            graph.updateEntryNode(newEntryNode);
+            improveConnections(newEntryNode);
+            updateEntryNodeIn.addAndGet(graph.size());
+        }
     }
 
     public void improveConnections(int node) {

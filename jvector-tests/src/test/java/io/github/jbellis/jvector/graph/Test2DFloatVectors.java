@@ -173,7 +173,7 @@ public class Test2DFloatVectors extends LuceneTestCase {
         // 49, 49, 52% recall with 1M vectors
         // 79, 84, 76% with 100k
         System.out.println("\n### 1M vectors");
-        test2DGrid(316);
+        test2DGrid(2000);
     }
 
     /** creates nPoints on the surface of a 1/8 unit sphere */
